@@ -80,6 +80,9 @@
   .tip { position: absolute; pointer-events: none; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; white-space: nowrap; opacity: 0; transition: opacity .08s; }
   .tip b { font-weight: 500; }
 
+  .refbtn { font-size: 12px; color: var(--accent); cursor: pointer; border: 1px solid rgba(242,179,61,.4); border-radius: 999px; padding: 3px 10px; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); margin: -4px 0 6px; }
+  .legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
   ul.why { margin: 0; padding-left: 18px; color: var(--ink-2); }
   ul.why li { margin: 4px 0; }
   .heat { width: 100%; border-radius: 8px; display: block; }
@@ -169,7 +172,11 @@
     </div>
 
     <div class="panel">
-      <p class="label">Vibration spectrum · amplitude in pixels of image motion</p>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+        <p class="label" id="specLabel">Vibration spectrum · amplitude in pixels of image motion</p>
+        <label class="refbtn"><input type="file" id="refFile" accept=".csv,text/csv" hidden>+ accelerometer ground truth (phyphox CSV)</label>
+      </div>
+      <div class="legend" id="legend"></div>
       <div class="chart" id="chart"><svg id="svg" role="img" aria-label="Vibration spectrum"></svg><div class="tip" id="tip"></div></div>
     </div>
 
@@ -239,6 +246,7 @@ function render(r) {
   const kindChip = { diagnose: ['good', 'Agent: diagnosed'], recapture: ['warn', 'Agent: needs a better recording'], escalate: ['crit', 'Agent: escalating to a person'] }[d.action.kind];
   $('chips').innerHTML = `<span class="chip ${kindChip[0]}">${kindChip[1]}</span><span class="chip">confidence: ${esc(conf)}</span><span class="chip mono">${esc(w.model || 'rules')}</span>` +
     (d.severity && d.severity.iso_zone ? `<span class="chip ${d.severity.iso_zone[0] === 'D' ? 'crit' : d.severity.iso_zone[0] === 'C' ? 'warn' : 'good'}">ISO zone ${esc(d.severity.iso_zone)} · ${d.severity.velocity_mm_s_rms} mm/s</span>` : '') +
+    (r.reference_check && r.reference_check.accelerometer_hz ? `<span class="chip ${r.reference_check.match ? 'good' : 'warn'} mono">accelerometer ${r.reference_check.accelerometer_hz} Hz · video ${r.reference_check.video_hz} Hz · ${r.reference_check.error_pct}% off</span>` : '') +
     (r.alias_check ? `<span class="chip warn mono">alias check: true ≈ ${r.alias_check.true_hz_candidates.slice(0, 2).join(' / ')} Hz</span>` : '');
 
   renderAction(d.action);
@@ -293,6 +301,15 @@ function renderWO(w) {
   $('dlWO').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' })); a.download = `work-order-${last.id}.json`; a.click(); };
 }
 
+$('refFile').addEventListener('change', async ev => {
+  const f = ev.target.files[0]; if (!f || !last) return;
+  const fd = new FormData(); fd.append('csv', f);
+  const r = await fetch(`/api/runs/${last.id}/reference`, { method: 'POST', body: fd });
+  const j = await r.json();
+  if (!r.ok) { alert(j.detail || 'Could not read that CSV'); return; }
+  last = j; render(j);
+});
+
 function play(which) {
   if (audio) { audio.pause(); }
   audio = new Audio(`/runs/${last.id}/${which}.wav`);
@@ -305,8 +322,13 @@ function drawSpectrum(r) {
   const svg = $('svg'), tip = $('tip');
   const W = svg.clientWidth || 900, H = 280, m = { l: 52, r: 16, t: 14, b: 34 };
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  const hz = r.spectrum.hz, amp = r.spectrum.amp_px, d = r.diagnosis;
+  const hz = r.spectrum.hz, d = r.diagnosis, ref = r.reference;
+  // With a reference, both spectra are scaled to their own peak (video = displacement, accelerometer = acceleration).
+  const vmax = Math.max(...r.spectrum.amp_px) || 1;
+  const amp = ref ? r.spectrum.amp_px.map(a => a / vmax) : r.spectrum.amp_px;
   const xmax = hz[hz.length - 1], ymax = Math.max(...amp) * 1.15 || 1;
+  $('specLabel').textContent = ref ? 'Vibration spectrum · each normalised to its own peak' : 'Vibration spectrum · amplitude in pixels of image motion';
+  $('legend').innerHTML = ref ? `<span><i style="border-color:var(--signal)"></i>Quiver, from video</span><span><i style="border-color:var(--accent);border-top-style:dashed"></i>Accelerometer on the machine (phyphox)</span>` : '';
   const x = v => m.l + (v / xmax) * (W - m.l - m.r), y = v => H - m.b - (v / ymax) * (H - m.t - m.b);
   const css = getComputedStyle(document.documentElement);
   const ink3 = css.getPropertyValue('--ink-3'), line = css.getPropertyValue('--line'), sig = css.getPropertyValue('--signal'), acc = css.getPropertyValue('--accent');
@@ -326,7 +348,12 @@ function drawSpectrum(r) {
       g += `<text x="${x(f) + 4}" y="${m.t + 10}" font-size="11" fill="${ink3}" font-family="IBM Plex Mono">${k}×</text>`;
     }
   }
-  const fl = r.spectrum.noise_floor_px;
+  const fl = ref ? r.spectrum.noise_floor_px / vmax : r.spectrum.noise_floor_px;
+  if (ref) {
+    let q = '';
+    ref.hz.forEach((f, i) => { if (f <= xmax) q += `${q ? 'L' : 'M'}${x(f).toFixed(1)},${y(ref.amp_norm[i]).toFixed(1)}`; });
+    g += `<path d="${q}" fill="none" stroke="${acc}" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" opacity=".9"/>`;
+  }
   g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(fl)}" y2="${y(fl)}" stroke="${ink3}" stroke-dasharray="2 3"/><text x="${W - m.r}" y="${y(fl) - 4}" text-anchor="end" font-size="11" fill="${ink3}">noise floor</text>`;
   let p = `M${x(hz[0])},${y(amp[0])}`;
   for (let i = 1; i < hz.length; i++) p += `L${x(hz[i]).toFixed(1)},${y(amp[i]).toFixed(1)}`;
@@ -344,7 +371,7 @@ function drawSpectrum(r) {
     cross.setAttribute('x1', x(hz[i])); cross.setAttribute('x2', x(hz[i])); cross.setAttribute('opacity', 1);
     dot.setAttribute('cx', x(hz[i])); dot.setAttribute('cy', y(amp[i])); dot.setAttribute('opacity', 1);
     const order = d.running_hz ? ` · ${(hz[i] / d.running_hz).toFixed(2)}×` : '';
-    tip.innerHTML = `<b class="mono">${hz[i].toFixed(2)} Hz</b>${order}<br><span class="mono">${amp[i].toFixed(4)} px</span>`;
+    tip.innerHTML = `<b class="mono">${hz[i].toFixed(2)} Hz</b>${order}<br><span class="mono">${ref ? (amp[i] * 100).toFixed(0) + '% of peak' : amp[i].toFixed(4) + ' px'}</span>`;
     tip.style.opacity = 1;
     const tx = (x(hz[i]) / W) * bb.width;
     tip.style.left = Math.min(bb.width - 140, tx + 12) + 'px'; tip.style.top = (y(amp[i]) / H * bb.height - 10) + 'px';

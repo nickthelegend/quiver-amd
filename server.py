@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from quiver import llm, pipeline
+from quiver import llm, pipeline, reference
 from quiver.diagnose import resolve_alias
 
 ROOT = Path(__file__).resolve().parent
@@ -80,6 +80,24 @@ async def analyze(video: UploadFile = File(...), asset: str = Form("Machine"), r
     result["id"] = run_id
     result["asset"] = asset
     (d / "result.json").write_text(json.dumps(result))
+    return result
+
+
+@app.post("/api/runs/{run_id}/reference")
+async def add_reference(run_id: str, csv: UploadFile = File(...)):
+    """Ground truth: a phyphox accelerometer export recorded on the machine at the same time."""
+    result = _load(run_id)
+    data = await csv.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "CSV too large")
+    try:
+        t, acc = reference.parse_phyphox(data)
+        ref = reference.spectrum(t, acc, max_hz=result["diagnosis"]["quality"]["nyquist_hz"])
+    except (ValueError, IndexError) as e:
+        raise HTTPException(422, f"could not read that CSV: {e}")
+    result["reference"] = ref
+    result["reference_check"] = reference.compare(ref, result["diagnosis"]["peaks"])
+    (RUNS / run_id / "result.json").write_text(json.dumps(result))
     return result
 
 
