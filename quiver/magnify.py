@@ -1,8 +1,11 @@
-"""Linear Eulerian motion magnification (Wu et al., SIGGRAPH 2012).
+"""Motion magnification of the vibrating region.
 
-Blur each frame down a Gaussian pyramid, band-pass every pixel over time
-around the vibration frequency, amplify that band and add it back. Motion far
-below a pixel becomes a visible wobble.
+We already measured how the machine moves (its displacement over time, to a
+few hundredths of a pixel). To make that visible we band-pass the measured
+motion around the running speed, multiply it, and warp only the vibrating
+region by the amplified amount (Lagrangian magnification, Liu et al. 2005).
+The background stays still and sensor noise is not amplified, unlike
+pixel-wise Eulerian magnification.
 """
 
 from __future__ import annotations
@@ -17,47 +20,61 @@ import numpy as np
 from scipy import signal as sps
 
 
-def _down(img: np.ndarray, levels: int) -> np.ndarray:
-    for _ in range(levels):
-        img = cv2.pyrDown(img)
-    return img
+def _mask(rects: list[tuple[int, int, int, int]], src_w: int, size: tuple[int, int]) -> np.ndarray:
+    W, H = size
+    s = W / src_w
+    m = np.zeros((H, W), np.float32)
+    for x, y, w, h in rects:
+        cv2.rectangle(m, (int(x * s), int(y * s)), (int((x + w) * s), int((y + h) * s)), 1.0, -1)
+    k = max(3, int(0.04 * W)) | 1
+    return cv2.GaussianBlur(m, (k, k), 0)[..., None]
 
 
-def magnify(path: str, out_path: str, fps: float, band_hz: tuple[float, float], alpha: float = 40.0,
-            levels: int = 3, max_frames: int = 960, width: int = 480, playback_fps: float = 30.0) -> str:
-    """Write a side-by-side (original | magnified) H.264 mp4 and return its path."""
-    cap = cv2.VideoCapture(path)
-    frames = []
-    while len(frames) < max_frames:
-        ok, f = cap.read()
-        if not ok:
-            break
-        h, w = f.shape[:2]
-        s = width / w
-        frames.append(cv2.resize(f, (width, int(h * s) // 2 * 2), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0)
-    cap.release()
-    if len(frames) < 16:
-        raise ValueError("not enough frames to magnify")
+def magnify(path: str, out_path: str, fps: float, band_hz: tuple[float, float], xy: np.ndarray,
+            rects: list[tuple[int, int, int, int]], src_w: int, alpha: float = 30.0,
+            max_frames: int = 960, width: int = 480, playback_fps: float = 30.0) -> str:
+    """Write a side-by-side (original | magnified) H.264 mp4 and return its path.
 
-    small = np.stack([_down(f, levels) for f in frames])  # (T, h, w, 3)
+    xy: (2, T) measured displacement in pixels of the analysis frame (width src_w).
+    rects: vibrating regions (x, y, w, h) in analysis-frame pixels.
+    """
     lo, hi = band_hz
     hi = min(hi, fps / 2 * 0.95)
     lo = max(0.5, min(lo, hi * 0.9))
     sos = sps.butter(2, [lo, hi], btype="bandpass", fs=fps, output="sos")
-    band = sps.sosfiltfilt(sos, small, axis=0).astype(np.float32) * alpha
+    motion = sps.sosfiltfilt(sos, xy, axis=1) * (alpha - 1)
 
-    H, W = frames[0].shape[:2]
+    cap = cv2.VideoCapture(path)
     tmp = Path(tempfile.mkdtemp())
     raw = tmp / "raw.mp4"
-    vw = cv2.VideoWriter(str(raw), cv2.VideoWriter_fourcc(*"mp4v"), playback_fps, (W * 2, H))
-    for f, b in zip(frames, band):
-        up = cv2.resize(b, (W, H), interpolation=cv2.INTER_LINEAR)
-        mag = np.clip(f + up, 0, 1)
+    vw = None
+    mask = None
+    scale = 1.0
+    i = 0
+    while i < min(max_frames, motion.shape[1]):
+        ok, f = cap.read()
+        if not ok:
+            break
+        h, w = f.shape[:2]
+        H = int(h * width / w) // 2 * 2
+        f = cv2.resize(f, (width, H), interpolation=cv2.INTER_AREA)
+        if vw is None:
+            vw = cv2.VideoWriter(str(raw), cv2.VideoWriter_fourcc(*"mp4v"), playback_fps, (width * 2, H))
+            mask = _mask(rects, src_w, (width, H))
+            scale = width / src_w
+        sx, sy = motion[0, i] * scale, motion[1, i] * scale
+        T = np.float32([[1, 0, sx], [0, 1, sy]])
+        moved = cv2.warpAffine(f, T, (width, H), borderMode=cv2.BORDER_REFLECT)
+        mag = (f * (1 - mask) + moved * mask).astype(np.uint8)
         both = np.hstack([f, mag])
-        both = (both * 255).astype(np.uint8)
         cv2.putText(both, "original", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(both, f"magnified x{alpha:.0f}  {lo:.1f}-{hi:.1f} Hz", (W + 10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (80, 220, 255), 2)
+        cv2.putText(both, f"motion x{alpha:.0f}  {lo:.1f}-{hi:.1f} Hz", (width + 10, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (80, 220, 255), 2)
         vw.write(both)
+        i += 1
+    cap.release()
+    if vw is None:
+        raise ValueError("no frames to magnify")
     vw.release()
 
     # Browsers can't play mp4v; re-encode to H.264 when ffmpeg is present.

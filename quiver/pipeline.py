@@ -48,7 +48,12 @@ def run(video: str, out_dir: str, rpm: float | None = None, mm_per_px: float | N
     cv2.imwrite(str(out / "frame.jpg"), np.clip(motion.first_frame, 0, 255).astype(np.uint8))
 
     if make_video and f1:
-        magnify(video, str(out / "magnified.mp4"), spec.fps, (0.8 * f1, 1.2 * f1))
+        rects = [(t.x, t.y, t.w, t.h) for t in (motion.tiles[i] for i in spec.hot_tiles)]
+        # Aim for a wobble of ~6 px on screen whatever the real amplitude is.
+        a1 = max(diag.orders.get("1x", 0.0), 1e-3)
+        alpha = float(np.clip(6.0 / a1, 10, 200))
+        magnify(video, str(out / "magnified.mp4"), spec.fps, (0.8 * f1, 2.4 * f1), spec.xy, rects,
+                motion.frame_size[0], alpha=alpha)
 
     keep = spec.freqs <= spec.fps / 2
     result = {

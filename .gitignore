@@ -9,3 +9,5 @@ data/raw/
 .DS_Store
 out/
 samples/*.mp4
+runs/
+.claude/

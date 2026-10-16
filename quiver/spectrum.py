@@ -30,6 +30,7 @@ class Spectrum:
     noise_floor: float
     peaks: list[Peak]
     signal: np.ndarray  # combined displacement signal, pixels
+    xy: np.ndarray  # (2, T) mean x/y displacement of the hot tiles, pixels
     hot_tiles: list[int]  # tile indices that carry the vibration
     tile_energy: np.ndarray  # per-tile band energy, for the heatmap
 
@@ -88,8 +89,9 @@ def analyze(motion: MotionResult, top_k: int = 6, max_peaks: int = 8) -> Spectru
     idx = sorted(idx, key=lambda i: amp[i], reverse=True)[:max_peaks]
     peaks = [Peak(float(_refine_freq(freqs, amp, i)), float(amp[i]), float(20 * np.log10(amp[i] / floor))) for i in idx]
 
+    xy = np.vstack([motion.dx[hot].mean(axis=0), motion.dy[hot].mean(axis=0)])
     duration = motion.n_frames / motion.fps
-    return Spectrum(motion.fps, duration, float(freqs[1] - freqs[0]), freqs, amp, floor, peaks, combined, hot, energy)
+    return Spectrum(motion.fps, duration, float(freqs[1] - freqs[0]), freqs, amp, floor, peaks, combined, xy, hot, energy)
 
 
 def _refine_freq(freqs: np.ndarray, amp: np.ndarray, i: int) -> float:
