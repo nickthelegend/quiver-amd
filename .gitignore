@@ -7,3 +7,5 @@ data/raw/
 *.mp4
 *.mov
 .DS_Store
+out/
+samples/*.mp4
