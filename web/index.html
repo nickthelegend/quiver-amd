@@ -247,7 +247,10 @@ function render(r) {
   $('chips').innerHTML = `<span class="chip ${kindChip[0]}">${kindChip[1]}</span><span class="chip">confidence: ${esc(conf)}</span><span class="chip mono">${esc(w.model || 'rules')}</span>` +
     (d.severity && d.severity.iso_zone ? `<span class="chip ${d.severity.iso_zone[0] === 'D' ? 'crit' : d.severity.iso_zone[0] === 'C' ? 'warn' : 'good'}">ISO zone ${esc(d.severity.iso_zone)} · ${d.severity.velocity_mm_s_rms} mm/s</span>` : '') +
     (r.reference_check && r.reference_check.accelerometer_hz ? `<span class="chip ${r.reference_check.match ? 'good' : 'warn'} mono">accelerometer ${r.reference_check.accelerometer_hz} Hz · video ${r.reference_check.video_hz} Hz · ${r.reference_check.error_pct}% off</span>` : '') +
-    (r.alias_check ? `<span class="chip warn mono">alias check: true ≈ ${r.alias_check.true_hz_candidates.slice(0, 2).join(' / ')} Hz</span>` : '');
+    (r.alias_check ? `<span class="chip warn mono">alias check: true ≈ ${r.alias_check.true_hz_candidates.slice(0, 2).join(' / ')} Hz</span>` : '') +
+    (w.grounding && w.grounding.checked ? (w.grounding.unverified.length
+      ? `<span class="chip crit" title="${esc(w.grounding.unverified.map(u => u.number + ' in “' + u.in + '”').join('\n'))}">${w.grounding.unverified.length} number${w.grounding.unverified.length > 1 ? 's' : ''} not in the measurements</span>`
+      : `<span class="chip good">all ${w.grounding.checked} numbers traced to measurements</span>`) : '');
 
   renderAction(d.action);
 

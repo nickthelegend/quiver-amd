@@ -41,7 +41,10 @@ Quiver turns the phone a technician already carries into a first-pass vibration 
    Every finding cites its numbers.
 5. **Act.** **Gemma, served on AMD Instinct GPUs**, receives the measured evidence plus a heatmap of
    where the machine vibrates. It writes the diagnosis and a maintenance work order, citing
-   measured numbers only.
+   measured numbers only, and Quiver checks that it did. Every number in Gemma's reasoning is
+   traced back to a measurement (a frequency, its rpm, an amplitude, a ratio between orders). If
+   one can't be traced, it is flagged on screen and the confidence drops to low. On a clean
+   reply the page says "all 5 numbers traced to measurements".
 
 **It's an agent, not a report.** When the evidence isn't good enough, Quiver doesn't guess.
 - If the signal is weak, the camera shook, the clip is too short, or the frame rate is too low to

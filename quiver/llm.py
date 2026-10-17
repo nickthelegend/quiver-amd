@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -85,11 +86,69 @@ def write_work_order(result: dict, out_dir: str, asset: str = "unnamed machine")
         text = r.json()["choices"][0]["message"]["content"]
         out = json.loads(text[text.find("{"): text.rfind("}") + 1])
         out["model"] = os.environ["QUIVER_LLM_MODEL"]
+        out["grounding"] = grounding(out, ev)
+        if out["grounding"]["unverified"]:  # a number we never measured: don't let it sound sure
+            out["confidence"] = "low"
         return out
     except Exception as e:  # keep the demo alive if the endpoint hiccups
         out = _rules_only(ev)
         out["llm_error"] = str(e)[:300]
         return out
+
+
+NUMBER = re.compile(r"(?<![A-Za-z\d.])(\d+(?:\.\d+)?)(?!\d)(\s*[x×](?![A-Za-z]))?")
+
+
+def _measured(ev: dict) -> list[float]:
+    """Every number in the evidence, plus the few the reply may fairly derive from them:
+    a frequency in rpm, and one order amplitude as a percentage of another."""
+    nums: list[float] = []
+
+    def walk(v):
+        if isinstance(v, bool):
+            return
+        if isinstance(v, (int, float)):
+            nums.append(float(v))
+        elif isinstance(v, str):
+            nums.extend(float(m.group(1)) for m in NUMBER.finditer(v))
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+
+    walk(ev)
+    hz = [ev.get("running_speed_hz")] + [p.get("hz") for p in ev.get("top_peaks", [])]
+    nums += [h * 60 for h in hz if h]
+    amps = [a for a in (ev.get("order_amplitudes_px") or {}).values() if a]
+    nums += [100 * a / b for a in amps for b in amps if a != b]
+    return nums
+
+
+def _matches(n: float, decimals: int, measured: list[float]) -> bool:
+    slack = 0.5 * 10 ** -decimals  # the reply may round
+    return any(abs(n - m) <= max(slack, 0.02 * abs(m)) for m in measured)
+
+
+def grounding(reply: dict, ev: dict) -> dict:
+    """Check that every number Gemma uses to explain itself was actually measured.
+    Order labels like 1x or 2× aren't measurements, and the work order (priority,
+    downtime) is planning, so only the headline, diagnosis and reasons are checked."""
+    measured = _measured(ev)
+    claims = [reply.get("headline"), reply.get("diagnosis"), *(reply.get("why") or [])]
+    checked, unverified = 0, []
+    for claim in claims:
+        if not isinstance(claim, str):
+            continue
+        for m in NUMBER.finditer(claim):
+            if m.group(2):  # an order label: 1x, 2×
+                continue
+            raw = m.group(1)
+            checked += 1
+            if not _matches(float(raw), len(raw.split(".")[1]) if "." in raw else 0, measured):
+                unverified.append({"number": raw, "in": claim})
+    return {"checked": checked, "unverified": unverified}
 
 
 def _rules_only(ev: dict) -> dict:
